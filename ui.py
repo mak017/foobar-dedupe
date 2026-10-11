@@ -8,9 +8,11 @@ from trash import batch_delete_to_trash, sync_foobar_playlist
 
 
 class DedupeReviewApp:
-    def __init__(self, root: tk.Tk, clusters: List[TrackCluster], on_complete: Callable = None):
+    def __init__(self, root: tk.Tk, clusters: List[TrackCluster], total_incoming: int = 0, analyzed_tracks: List[Dict[str, Any]] = None, on_complete: Callable = None):
         self.root = root
         self.clusters = clusters
+        self.total_incoming = max(total_incoming, len(clusters))
+        self.analyzed_tracks = analyzed_tracks or []
         self.on_complete = on_complete
 
         self.root.title("foobar2000 Duplicate & Upgrade Assistant")
@@ -25,6 +27,9 @@ class DedupeReviewApp:
         self.fg_text = "#e0e0e0"
         self.fg_muted = "#9da1a6"
         self.color_accent = "#007acc"
+        self.color_accent_hover = "#1f8ad2"
+        self.color_btn_disabled_bg = "#333842"
+        self.color_btn_disabled_fg = "#70757d"
         self.color_green = "#4ec9b0"
         self.color_orange = "#ce9178"
         self.color_yellow = "#dcdcaa"
@@ -32,12 +37,11 @@ class DedupeReviewApp:
 
         self.root.configure(bg=self.bg_main)
 
-        # Map of checkbox_var -> file_path_to_delete
-        self.checkbox_vars = {}
-        self.items_data = []
+        # List of items: [{'var': BooleanVar, 'match': CandidateMatch, 'target_path': str}]
+        self.item_entries = []
 
         self._setup_ui()
-        self._populate_clusters()
+        self._populate_content()
         self._update_summary()
 
     def _setup_ui(self):
@@ -57,7 +61,7 @@ class DedupeReviewApp:
         total_matches = sum(len(c.matches) for c in self.clusters)
         self.sub_lbl = tk.Label(
             header_frame,
-            text=f"{len(self.clusters)} incoming track(s) analyzed | {total_matches} candidate match(es)",
+            text=f"{self.total_incoming} incoming track(s) analyzed | {total_matches} candidate match(es) found",
             font=("Segoe UI", 10),
             bg=self.bg_panel,
             fg=self.fg_muted
@@ -94,20 +98,21 @@ class DedupeReviewApp:
         self.btn_confirm = tk.Button(
             bottom_frame,
             text="Confirm & Move to Recycle Bin (0)",
-            bg=self.color_accent,
-            fg="#ffffff",
+            bg=self.color_btn_disabled_bg,
+            fg=self.color_btn_disabled_fg,
+            disabledforeground=self.color_btn_disabled_fg,
             font=("Segoe UI", 10, "bold"),
             relief="flat",
             padx=16,
             pady=6,
-            cursor="hand2",
+            state=tk.DISABLED,
             command=self._execute_actions
         )
         self.btn_confirm.pack(side=tk.RIGHT, padx=(10, 0))
 
         btn_cancel = tk.Button(
             bottom_frame,
-            text="Cancel",
+            text="Close",
             bg="#3a3d41",
             fg=self.fg_text,
             command=self.root.destroy,
@@ -155,24 +160,73 @@ class DedupeReviewApp:
         if self.canvas.winfo_exists():
             self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-    def _populate_clusters(self):
+    def _populate_content(self):
+        # Case 1: No duplicates found
         if not self.clusters:
-            no_match_frame = tk.Frame(self.scroll_content, bg=self.bg_card, padx=30, pady=30)
-            no_match_frame.pack(fill=tk.X, pady=20)
+            no_match_frame = tk.Frame(self.scroll_content, bg=self.bg_card, padx=30, pady=25)
+            no_match_frame.pack(fill=tk.X, pady=(10, 15))
+
             tk.Label(
                 no_match_frame,
-                text="No duplicates or upgrade candidates found among selected tracks.",
-                font=("Segoe UI", 11),
+                text=f"✓  All {self.total_incoming} analyzed track(s) appear to be unique or already your best copy.",
+                font=("Segoe UI", 12, "bold"),
                 bg=self.bg_card,
                 fg=self.color_green
-            ).pack()
-            self.btn_confirm.configure(state=tk.DISABLED)
+            ).pack(anchor="w")
+
+            tk.Label(
+                no_match_frame,
+                text="No inferior copies or older radio edits were found in your library for these tracks.",
+                font=("Segoe UI", 10),
+                bg=self.bg_card,
+                fg=self.fg_muted
+            ).pack(anchor="w", pady=(5, 0))
+
+            # Show details of tracks that were analyzed
+            if self.analyzed_tracks:
+                list_frame = tk.Frame(self.scroll_content, bg=self.bg_panel, padx=20, pady=15)
+                list_frame.pack(fill=tk.X)
+
+                tk.Label(
+                    list_frame,
+                    text="Verified Tracks:",
+                    font=("Segoe UI", 10, "bold"),
+                    bg=self.bg_panel,
+                    fg=self.fg_text
+                ).pack(anchor="w", pady=(0, 10))
+
+                for t in self.analyzed_tracks:
+                    dur_str = format_duration(t.get('duration', 0))
+                    fmt_str = f"{t.get('format', '')} {t.get('bitrate', '')}k"
+                    row_txt = f"• {t.get('artist', 'Unknown')} - {t.get('title', 'Unknown')} [{dur_str} | {fmt_str}]"
+                    
+                    row = tk.Frame(list_frame, bg=self.bg_panel)
+                    row.pack(fill=tk.X, pady=2)
+                    tk.Label(
+                        row,
+                        text="✓ UNIQUE",
+                        font=("Segoe UI", 8, "bold"),
+                        bg="#1b442b",
+                        fg=self.color_green,
+                        padx=5,
+                        pady=1
+                    ).pack(side=tk.LEFT, padx=(0, 10))
+                    tk.Label(
+                        row,
+                        text=row_txt,
+                        font=("Segoe UI", 9),
+                        bg=self.bg_panel,
+                        fg=self.fg_text
+                    ).pack(side=tk.LEFT)
+
+            self._set_confirm_button_state(enabled=False, count=0)
             return
 
+        # Case 2: Duplicates / Upgrades found
         for idx, cluster in enumerate(self.clusters, 1):
             inc = cluster.incoming
-            inc_dur = format_duration(inc['duration'])
-            inc_q = f"{inc['format']} {inc['bitrate']}k"
+            inc_dur = format_duration(inc.get('duration', 0))
+            inc_q = f"{inc.get('format', '')} {inc.get('bitrate', '')}k"
 
             # Cluster Box
             cluster_frame = tk.Frame(self.scroll_content, bg=self.bg_panel, relief="flat", bd=1)
@@ -193,8 +247,8 @@ class DedupeReviewApp:
             )
             tag_inc.pack(side=tk.LEFT, padx=(0, 10))
 
-            inc_title = f"{inc['artist']} - {inc['title']}"
-            if inc.get('mix_name') and inc['mix_name'] not in inc['title']:
+            inc_title = f"{inc.get('artist', '')} - {inc.get('title', '')}"
+            if inc.get('mix_name') and inc['mix_name'] not in inc.get('title', ''):
                 inc_title += f" ({inc['mix_name']})"
 
             lbl_title = tk.Label(
@@ -218,7 +272,7 @@ class DedupeReviewApp:
 
             lbl_path = tk.Label(
                 cluster_frame,
-                text=f"Location: {inc['path']}",
+                text=f"Location: {inc.get('path', '')}",
                 font=("Segoe UI", 8),
                 bg=self.bg_panel,
                 fg=self.fg_muted,
@@ -234,8 +288,8 @@ class DedupeReviewApp:
 
             for m_idx, match in enumerate(cluster.matches):
                 cand = match.candidate
-                cand_dur = format_duration(cand['duration'])
-                cand_q = f"{cand['format']} {cand['bitrate']}k"
+                cand_dur = format_duration(cand.get('duration', 0))
+                cand_q = f"{cand.get('format', '')} {cand.get('bitrate', '')}k"
 
                 card_bg = self.bg_card
                 card = tk.Frame(matches_frame, bg=card_bg, padx=12, pady=8, bd=1, relief="solid")
@@ -282,8 +336,8 @@ class DedupeReviewApp:
                 )
                 badge.pack(side=tk.LEFT, padx=(0, 10))
 
-                cand_title = f"{cand['artist']} - {cand['title']}"
-                if cand.get('mix_name') and cand['mix_name'] not in cand['title']:
+                cand_title = f"{cand.get('artist', '')} - {cand.get('title', '')}"
+                if cand.get('mix_name') and cand['mix_name'] not in cand.get('title', ''):
                     cand_title += f" ({cand['mix_name']})"
 
                 lbl_cand = tk.Label(
@@ -312,29 +366,55 @@ class DedupeReviewApp:
                 lbl_reason.pack(fill=tk.X)
 
                 if match.target_path:
-                    self.checkbox_vars[var] = match.target_path
-                    self.items_data.append((var, match))
+                    self.item_entries.append({
+                        'var': var,
+                        'match': match,
+                        'target_path': match.target_path
+                    })
 
     def _select_recommended(self):
-        for var, match in self.items_data:
-            var.set(match.recommended_check)
+        for item in self.item_entries:
+            item['var'].set(item['match'].recommended_check)
         self._update_summary()
 
     def _deselect_all(self):
-        for var in self.checkbox_vars.keys():
-            var.set(False)
+        for item in self.item_entries:
+            item['var'].set(False)
         self._update_summary()
 
+    def _set_confirm_button_state(self, enabled: bool, count: int):
+        """Sets confirm button style cleanly without low-contrast disabled text."""
+        if enabled:
+            self.btn_confirm.configure(
+                text=f"Confirm & Move to Recycle Bin ({count})",
+                bg=self.color_accent,
+                fg="#ffffff",
+                activebackground=self.color_accent_hover,
+                activeforeground="#ffffff",
+                cursor="hand2",
+                state=tk.NORMAL
+            )
+        else:
+            self.btn_confirm.configure(
+                text=f"Confirm & Move to Recycle Bin ({count})",
+                bg=self.color_btn_disabled_bg,
+                fg=self.color_btn_disabled_fg,
+                disabledforeground=self.color_btn_disabled_fg,
+                cursor="arrow",
+                state=tk.DISABLED
+            )
+
     def _update_summary(self):
-        selected_count = sum(1 for var in self.checkbox_vars.keys() if var.get())
-        self.btn_confirm.configure(
-            text=f"Confirm & Move to Recycle Bin ({selected_count})",
-            state=tk.NORMAL if selected_count > 0 else tk.DISABLED
-        )
-        self.summary_lbl.configure(text=f"{selected_count} file(s) selected for deletion")
+        selected_count = sum(1 for item in self.item_entries if item['var'].get())
+        self._set_confirm_button_state(enabled=(selected_count > 0), count=selected_count)
+
+        if selected_count > 0:
+            self.summary_lbl.configure(text=f"{selected_count} file(s) selected for deletion")
+        else:
+            self.summary_lbl.configure(text="")
 
     def _execute_actions(self):
-        files_to_delete = [path for var, path in self.checkbox_vars.items() if var.get()]
+        files_to_delete = [item['target_path'] for item in self.item_entries if item['var'].get() and item['target_path']]
         if not files_to_delete:
             return
 
@@ -365,8 +445,8 @@ class DedupeReviewApp:
         self.root.destroy()
 
 
-def run_review_ui(clusters: List[TrackCluster], on_complete: Callable = None):
+def run_review_ui(clusters: List[TrackCluster], total_incoming: int = 0, analyzed_tracks: List[Dict[str, Any]] = None, on_complete: Callable = None):
     """Entry point to launch the Tkinter GUI."""
     root = tk.Tk()
-    app = DedupeReviewApp(root, clusters, on_complete)
+    app = DedupeReviewApp(root, clusters, total_incoming=total_incoming, analyzed_tracks=analyzed_tracks, on_complete=on_complete)
     root.mainloop()

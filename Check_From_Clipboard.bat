@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-start "" pythonw.exe main.py check --clipboard
+pythonw.exe main.py --clipboard

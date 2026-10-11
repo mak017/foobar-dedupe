@@ -49,28 +49,81 @@ def init_db():
     conn.close()
 
 
-def parse_filename_fallback(filename: str) -> Tuple[str, str]:
-    """Fallback if tags are missing: extract artist and title from filename."""
-    stem = Path(filename).stem
-    # Remove track numbers: "01 - ", "01. ", "01-", etc.
-    stem = re.sub(r'^\d+[\s\.\-_]+', '', stem)
-    
-    parts = stem.split(" - ", 1)
-    if len(parts) == 2:
-        return parts[0].strip(), parts[1].strip()
-    
-    # Try underscore separation if no " - "
-    if "_" in stem and "-" in stem:
-        parts = stem.split("-", 1)
-        return parts[0].replace("_", " ").strip(), parts[1].replace("_", " ").strip()
-        
-    return "", stem.replace("_", " ").strip()
+DUMMY_ARTISTS = {'', 'unknown', 'unknown artist', 'various', 'various artists', 'va', 'untitled', 'various artists'}
+DUMMY_TITLES = {'', 'untitled', 'title', 'audio track'}
+
+
+def smart_parse_metadata(artist_tag: str, title_tag: str, filename: str) -> Tuple[str, str]:
+    """
+    Intelligently extracts clean artist and title, handling:
+    - Missing or empty tags
+    - Dummy tags like 'Unknown Artist', 'Track 01'
+    - Title tags containing 'Artist - Title'
+    - Messy filenames with track numbers, underscores, and release group suffixes
+    """
+    artist = artist_tag.strip() if artist_tag else ""
+    title = title_tag.strip() if title_tag else ""
+
+    if artist.lower() in DUMMY_ARTISTS:
+        artist = ""
+    if title.lower() in DUMMY_TITLES or re.match(r'^track\s*\d+$', title.lower()):
+        title = ""
+
+    # Check if title tag contains "Artist - Title"
+    if title and " - " in title:
+        parts = title.split(" - ", 1)
+        if not artist or artist.lower() in DUMMY_ARTISTS:
+            artist = parts[0].strip()
+            title = parts[1].strip()
+
+    # If still missing artist or title, extract from filename
+    if not artist or not title:
+        stem = Path(filename).stem
+        # Strip bracketed release tags like [WEB], [320kbps], [ASOT123]
+        stem = re.sub(r'\[[^\]]*\]', '', stem).strip()
+        # Strip leading numbers/CD prefixes: "01. ", "(01) ", "CD1-01 ", "01-", "01 - "
+        stem = re.sub(r'^\s*(\[|\()?(\d+|cd\s*\d+|disc\s*\d+)(\]|\))?[\s\.\-_]+', '', stem, flags=re.IGNORECASE).strip()
+
+        stem_norm = stem.replace('_-_', ' - ').replace('__', ' - ')
+
+        fn_artist = ""
+        fn_title = ""
+
+        if " - " in stem_norm:
+            p = stem_norm.split(" - ", 1)
+            fn_artist = p[0].replace('_', ' ').strip()
+            fn_title = p[1].replace('_', ' ').strip()
+        elif "-" in stem:
+            p = stem.split("-")
+            if len(p) >= 2:
+                fn_artist = p[0].replace('_', ' ').strip()
+                # Omit trailing scene tag (<=6 chars like 'rec', 'web', 'dh') unless it's a mix keyword
+                if len(p[-1]) <= 6 and not any(w in p[-1].lower() for w in ('mix', 'edit', 'dub')):
+                    fn_title = "-".join(p[1:-1]).replace('_', ' ').strip()
+                else:
+                    fn_title = "-".join(p[1:]).replace('_', ' ').strip()
+        else:
+            fn_title = stem.replace('_', ' ').strip()
+
+        if not artist and fn_artist:
+            artist = fn_artist
+        if not title and fn_title:
+            title = fn_title
+
+    # Final cleanup of any remaining underscores
+    artist = artist.replace('_', ' ').strip()
+    title = title.replace('_', ' ').strip()
+
+    return artist, title
 
 
 def extract_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
-    """Reads audio metadata and extracts normalized tags."""
+    """Reads audio metadata and extracts normalized tags with smart fallbacks."""
     try:
         p = Path(file_path)
+        if not p.exists():
+            return None
+
         stat = p.stat()
         file_size = stat.st_size
         mtime = stat.st_mtime
@@ -91,7 +144,6 @@ def extract_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
 
         if ext in {'.flac', '.wav', '.alac'}:
             is_lossless = 1
-            # Calculate nominal bitrate for lossless
             bitrate = int((file_size * 8) / (duration * 1000)) if duration > 0 else 1411
         elif ext in {'.mp4', '.m4a', '.aac'}:
             bitrate = int(getattr(audio.info, 'bitrate', 0) / 1000)
@@ -104,7 +156,7 @@ def extract_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
         else:
             bitrate = int(getattr(audio.info, 'bitrate', 0) / 1000)
 
-        # Tags
+        # Raw tags
         artist_raw = ""
         title_raw = ""
 
@@ -122,23 +174,18 @@ def extract_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
         except Exception:
             pass
 
-        # Fallback to filename if empty
-        if not artist_raw or not title_raw:
-            fn_artist, fn_title = parse_filename_fallback(p.name)
-            if not artist_raw:
-                artist_raw = fn_artist
-            if not title_raw:
-                title_raw = fn_title
+        # Apply smart parser to handle empty tags, DJ cuts, and messy filenames
+        artist_clean, title_clean = smart_parse_metadata(artist_raw, title_raw, p.name)
 
-        artist_norm, _ = extract_artist(artist_raw)
-        title_norm, mix_name, mix_type = extract_title_and_mix(title_raw)
+        artist_norm, _ = extract_artist(artist_clean)
+        title_norm, mix_name, mix_type = extract_title_and_mix(title_clean)
 
         return {
             'path': str(p),
             'filename': p.name,
-            'artist': artist_raw,
+            'artist': artist_clean,
             'artist_norm': artist_norm,
-            'title': title_raw,
+            'title': title_clean,
             'title_norm': title_norm,
             'mix_name': mix_name,
             'mix_type': mix_type,
@@ -258,25 +305,45 @@ class LibraryIndexer:
             """, batch)
 
     def find_candidates(self, title_norm: str, artist_norm: str = "") -> List[sqlite3.Row]:
-        """Finds candidate tracks from DB with similar title and artist."""
-        if not title_norm:
+        """Finds candidate tracks from DB with similar title and/or artist."""
+        if not title_norm and not artist_norm:
             return []
         
         conn = get_db_connection()
         cur = conn.cursor()
+        found_rows = []
+        seen_paths = set()
 
-        # First try exact title match
-        cur.execute("SELECT * FROM tracks WHERE title_norm = ?", (title_norm,))
-        rows = cur.fetchall()
+        def add_rows(rows):
+            for r in rows:
+                p = r['path']
+                if p not in seen_paths:
+                    seen_paths.add(p)
+                    found_rows.append(r)
 
-        # If not enough matches, try LIKE substring match
-        if len(rows) < 5:
-            cur.execute("SELECT * FROM tracks WHERE title_norm LIKE ?", (f"%{title_norm}%",))
-            like_rows = cur.fetchall()
-            existing_paths = {r['path'] for r in rows}
-            for lr in like_rows:
-                if lr['path'] not in existing_paths:
-                    rows.append(lr)
+        # 1. Exact title match
+        if title_norm:
+            cur.execute("SELECT * FROM tracks WHERE title_norm = ?", (title_norm,))
+            add_rows(cur.fetchall())
+
+        # 2. Artist match (if artist provided)
+        if artist_norm and len(artist_norm) > 2:
+            cur.execute("SELECT * FROM tracks WHERE artist_norm = ? LIMIT 100", (artist_norm,))
+            add_rows(cur.fetchall())
+
+        # 3. Substring match on title (if title >= 4 chars)
+        if title_norm and len(title_norm) >= 4:
+            cur.execute("SELECT * FROM tracks WHERE title_norm LIKE ? LIMIT 50", (f"%{title_norm}%",))
+            add_rows(cur.fetchall())
+
+        # 4. Significant words match (e.g. "sun" and "moon")
+        if title_norm:
+            tokens = [t for t in title_norm.split() if len(t) >= 3 and t not in ('and', 'the', 'for', 'with', 'from')]
+            if len(tokens) >= 2:
+                conditions = " AND ".join(["title_norm LIKE ?"] * len(tokens[:3]))
+                params = [f"%{t}%" for t in tokens[:3]]
+                cur.execute(f"SELECT * FROM tracks WHERE {conditions} LIMIT 50", params)
+                add_rows(cur.fetchall())
 
         conn.close()
-        return rows
+        return found_rows
