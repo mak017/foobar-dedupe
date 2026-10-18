@@ -16,7 +16,7 @@ QUEUE_FILE = Path(__file__).resolve().parent / ".incoming_queue.txt"
 LOCK_FILE = Path(__file__).resolve().parent / ".incoming_lock"
 
 
-def enqueue_and_aggregate(incoming_paths: List[str], initial_wait_ms: int = 350) -> Optional[List[str]]:
+def enqueue_and_aggregate(incoming_paths: List[str], initial_wait_ms: int = 350, **kwargs) -> Optional[List[str]]:
     """
     Collects paths from rapid sequential or concurrent launches (e.g. foo_run).
     Returns the aggregated list of paths for the coordinator process,
@@ -25,14 +25,21 @@ def enqueue_and_aggregate(incoming_paths: List[str], initial_wait_ms: int = 350)
     if not incoming_paths:
         return []
 
-    # Append our paths to the queue file
-    try:
-        with open(QUEUE_FILE, "a", encoding="utf-8") as f:
-            for p in incoming_paths:
-                p_clean = p.strip().strip('"')
-                if p_clean:
-                    f.write(p_clean + "\n")
-    except Exception:
+    # Append our paths to the queue file with retries for Windows concurrent access
+    appended = False
+    for _ in range(6):
+        try:
+            with open(QUEUE_FILE, "a", encoding="utf-8") as f:
+                for p in incoming_paths:
+                    p_clean = p.strip().strip('"')
+                    if p_clean:
+                        f.write(p_clean + "\n")
+            appended = True
+            break
+        except Exception:
+            time.sleep(0.04)
+
+    if not appended:
         return incoming_paths
 
     # Try to become the primary coordinator by creating LOCK_FILE atomically
@@ -271,7 +278,7 @@ def main():
 
     # If file paths were passed (e.g. from foo_run or drag-and-drop)
     # Aggregate multiple invocations into a single batch
-    aggregated = enqueue_and_aggregate(raw_args, wait_ms=300)
+    aggregated = enqueue_and_aggregate(raw_args, initial_wait_ms=350)
     if aggregated is None:
         # Secondary process in a multi-call sequence (foo_run); exit cleanly
         return
@@ -280,4 +287,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        log_file = Path(__file__).resolve().parent / "crash_log.txt"
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*60}\nCRASH AT {time.ctime()}:\n")
+            traceback.print_exc(file=f)
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            r = tk.Tk()
+            r.withdraw()
+            messagebox.showerror("Dedupe Assistant Error", f"An error occurred:\n\n{e}\n\nDetails saved to:\n{log_file}")
+            r.destroy()
+        except Exception:
+            pass

@@ -76,15 +76,15 @@ def batch_delete_to_trash(file_paths: List[str]) -> Tuple[List[str], List[str]]:
 
 
 def sync_foobar_playlist():
-    """Signals foobar2000 to purge missing / dead items from playlists."""
+    """Signals foobar2000 to purge missing / dead items from playlists without blocking."""
     if os.path.exists(FOOBAR_EXE):
         commands = [
             [FOOBAR_EXE, '/command:Edit/Remove dead items'],
-            [FOOBAR_EXE, '/runcmd=Edit/Remove dead items'],
-            [FOOBAR_EXE, '/runcmd-playlist=Remove dead items'],
+            [FOOBAR_EXE, '/command:Remove dead items'],
+            [FOOBAR_EXE, '/command:Clear dead items'],
         ]
         for cmd in commands:
             try:
-                subprocess.run(cmd, check=False, timeout=3)
+                subprocess.Popen(cmd)
             except Exception:
                 pass
