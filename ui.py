@@ -161,68 +161,22 @@ class DedupeReviewApp:
             self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _populate_content(self):
-        # Case 1: No duplicates found
+        # Case 0: No tracks provided
         if not self.clusters:
             no_match_frame = tk.Frame(self.scroll_content, bg=self.bg_card, padx=30, pady=25)
             no_match_frame.pack(fill=tk.X, pady=(10, 15))
 
             tk.Label(
                 no_match_frame,
-                text=f"✓  All {self.total_incoming} analyzed track(s) appear to be unique or already your best copy.",
+                text="No incoming tracks were provided for analysis.",
                 font=("Segoe UI", 12, "bold"),
                 bg=self.bg_card,
-                fg=self.color_green
-            ).pack(anchor="w")
-
-            tk.Label(
-                no_match_frame,
-                text="No inferior copies or older radio edits were found in your library for these tracks.",
-                font=("Segoe UI", 10),
-                bg=self.bg_card,
                 fg=self.fg_muted
-            ).pack(anchor="w", pady=(5, 0))
-
-            # Show details of tracks that were analyzed
-            if self.analyzed_tracks:
-                list_frame = tk.Frame(self.scroll_content, bg=self.bg_panel, padx=20, pady=15)
-                list_frame.pack(fill=tk.X)
-
-                tk.Label(
-                    list_frame,
-                    text="Verified Tracks:",
-                    font=("Segoe UI", 10, "bold"),
-                    bg=self.bg_panel,
-                    fg=self.fg_text
-                ).pack(anchor="w", pady=(0, 10))
-
-                for t in self.analyzed_tracks:
-                    dur_str = format_duration(t.get('duration', 0))
-                    fmt_str = f"{t.get('format', '')} {t.get('bitrate', '')}k"
-                    row_txt = f"• {t.get('artist', 'Unknown')} - {t.get('title', 'Unknown')} [{dur_str} | {fmt_str}]"
-                    
-                    row = tk.Frame(list_frame, bg=self.bg_panel)
-                    row.pack(fill=tk.X, pady=2)
-                    tk.Label(
-                        row,
-                        text="✓ UNIQUE",
-                        font=("Segoe UI", 8, "bold"),
-                        bg="#1b442b",
-                        fg=self.color_green,
-                        padx=5,
-                        pady=1
-                    ).pack(side=tk.LEFT, padx=(0, 10))
-                    tk.Label(
-                        row,
-                        text=row_txt,
-                        font=("Segoe UI", 9),
-                        bg=self.bg_panel,
-                        fg=self.fg_text
-                    ).pack(side=tk.LEFT)
-
+            ).pack(anchor="w")
             self._set_confirm_button_state(enabled=False, count=0)
             return
 
-        # Case 2: Duplicates / Upgrades found
+        # Render each track cluster
         for idx, cluster in enumerate(self.clusters, 1):
             inc = cluster.incoming
             inc_dur = format_duration(inc.get('duration', 0))
@@ -285,6 +239,31 @@ class DedupeReviewApp:
             # Matches container
             matches_frame = tk.Frame(cluster_frame, bg=self.bg_panel, padx=12, pady=6)
             matches_frame.pack(fill=tk.X)
+
+            # If no candidate duplicates or alternatives found, show clear confirmation
+            if not cluster.matches:
+                empty_card = tk.Frame(matches_frame, bg="#23272e", padx=12, pady=8, bd=1, relief="solid")
+                empty_card.configure(highlightbackground="#2f343f", highlightthickness=1)
+                empty_card.pack(fill=tk.X, pady=(0, 4))
+
+                tk.Label(
+                    empty_card,
+                    text="✓ UNIQUE",
+                    font=("Segoe UI", 8, "bold"),
+                    bg="#1b442b",
+                    fg=self.color_green,
+                    padx=6,
+                    pady=2
+                ).pack(side=tk.LEFT, padx=(0, 10))
+
+                tk.Label(
+                    empty_card,
+                    text="No duplicates or alternative versions found in library",
+                    font=("Segoe UI", 9),
+                    bg="#23272e",
+                    fg=self.fg_muted
+                ).pack(side=tk.LEFT)
+                continue
 
             for m_idx, match in enumerate(cluster.matches):
                 cand = match.candidate

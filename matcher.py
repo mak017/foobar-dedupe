@@ -61,14 +61,35 @@ class TrackMatcher:
             if incoming_path and cand_path.lower() == incoming_path.lower():
                 continue
 
-            # Fuzzy verification
-            title_score = fuzz.token_set_ratio(incoming_meta['title_norm'], cand_dict['title_norm'])
-            artist_score = fuzz.token_set_ratio(incoming_meta['artist_norm'], cand_dict['artist_norm'])
-            
-            # Weighted match score
-            if incoming_meta['artist_norm'] and cand_dict['artist_norm']:
-                match_score = int(0.6 * title_score + 0.4 * artist_score)
+            inc_artist = incoming_meta.get('artist_norm', '').strip()
+            cand_artist = cand_dict.get('artist_norm', '').strip()
+            inc_title = incoming_meta.get('title_norm', '').strip()
+            cand_title = cand_dict.get('title_norm', '').strip()
+
+            # 1. Artist Verification: If both tracks have artist tags, require genuine artist match
+            if inc_artist and cand_artist:
+                artist_score = fuzz.token_set_ratio(inc_artist, cand_artist)
+                # Allow containment (e.g. "Armin van Buuren" inside "Armin van Buuren pres. Gaia")
+                if inc_artist in cand_artist or cand_artist in inc_artist:
+                    artist_score = 100.0
+                if artist_score < 70.0:
+                    continue  # Completely different artist
             else:
+                artist_score = 0.0
+
+            # 2. Title Verification: Blend token_set and token_sort to avoid single-word subset false positives
+            t_set = fuzz.token_set_ratio(inc_title, cand_title)
+            t_sort = fuzz.token_sort_ratio(inc_title, cand_title)
+            title_score = int(0.5 * t_set + 0.5 * t_sort)
+
+            if inc_artist and cand_artist:
+                if title_score < 70:
+                    continue
+                match_score = int(0.5 * title_score + 0.5 * artist_score)
+            else:
+                # If artist is missing on one side, require very high title confidence
+                if title_score < 85:
+                    continue
                 match_score = title_score
 
             if match_score < FUZZY_MATCH_THRESHOLD:
@@ -200,8 +221,5 @@ class TrackMatcher:
                 reason=f"Duplicate (Same duration {inc_dur_str} ≈ {cand_dur_str}, similar bitrate)",
                 match_score=match_score
             ))
-
-        if not matches:
-            return None
 
         return TrackCluster(incoming=incoming_meta, matches=matches)
